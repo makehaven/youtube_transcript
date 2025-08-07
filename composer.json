@@ -1,0 +1,9 @@
+{
+    "name": "makehaven/youtube_transcript",
+    "type": "drupal-custom-module",
+    "description": "Fetches YouTube video transcripts and stores them in a taxonomy term field.",
+    "license": "GPL-2.0-or-later",
+    "require": {
+        "google/apiclient": "^2.14"
+    }
+}

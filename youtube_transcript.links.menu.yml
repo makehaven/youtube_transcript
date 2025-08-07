@@ -1,0 +1,7 @@
+youtube_transcript.settings:
+  title: 'YouTube Transcript'
+  description: 'Configure YouTube API settings and fetch transcripts.'
+  route_name: youtube_transcript.settings
+  parent: system.admin_config_services
+  weight: 10
+  menu_name: admin

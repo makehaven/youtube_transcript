@@ -1,0 +1,23 @@
+youtube_transcript.settings:
+  path: '/admin/config/youtube-transcript'
+  defaults:
+    _form: '\Drupal\youtube_transcript\Form\YoutubeTranscriptConfigForm'
+    _title: 'YouTube Transcript Settings'
+  requirements:
+    _permission: 'administer site configuration'
+
+youtube_transcript.authenticate:
+  path: '/youtube_transcript/authenticate'
+  defaults:
+    _controller: '\Drupal\youtube_transcript\Controller\YoutubeTranscriptController::authenticate'
+    _title: 'Authenticate with Google'
+  requirements:
+    _permission: 'administer site configuration'
+
+youtube_transcript.oauth_callback:
+  path: '/youtube_transcript/oauth-callback'
+  defaults:
+    _controller: '\Drupal\youtube_transcript\Controller\YoutubeTranscriptController::oauthCallback'
+    _title: 'Google OAuth Callback'
+  requirements:
+    _permission: 'administer site configuration'

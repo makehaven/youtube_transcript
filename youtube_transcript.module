@@ -1,0 +1,57 @@
+<?php
+
+use Drupal\taxonomy\Entity\Term;
+use Drupal\youtube_transcript\YoutubeTranscriptFetcher;
+use Drupal\Core\Logger\LoggerChannelFactoryInterface;
+
+/**
+ * Implements hook_entity_presave().
+ */
+function youtube_transcript_entity_presave(\Drupal\Core\Entity\EntityInterface $entity) {
+    if ($entity instanceof Term && $entity->bundle() === 'badges') {
+      $term_id = $entity->id();
+      \Drupal::logger('youtube_transcript')->notice('Checking YouTube URL for term: @term_id', ['@term_id' => $term_id]);
+  
+      // Fetch all values from the multi-value field.
+      $youtube_urls = $entity->get('field_badge_video')->getValue();
+      
+      if (empty($youtube_urls)) {
+        \Drupal::logger('youtube_transcript')->error('No values found in field_badge_video for term @term_id.', ['@term_id' => $term_id]);
+        return;
+      }
+  
+      // Extract the first non-empty video URL
+      $youtube_url = $youtube_urls[0]['input'] ?? null;
+  
+      if (!$youtube_url) {
+        \Drupal::logger('youtube_transcript')->error('Field exists but contains no URL for term @term_id.', ['@term_id' => $term_id]);
+        return;
+      }
+  
+      \Drupal::logger('youtube_transcript')->notice('Extracted YouTube URL: @url for term @term_id', [
+        '@url' => $youtube_url,
+        '@term_id' => $term_id,
+      ]);
+  
+      $original = $entity->original ?? NULL;
+      $original_url = $original ? $original->get('field_badge_video')->getValue()[0]['input'] ?? null : null;
+  
+      if ($original_url === $youtube_url) {
+        \Drupal::logger('youtube_transcript')->notice('No change detected in YouTube URL for term @term_id. Skipping fetch.', ['@term_id' => $term_id]);
+        return;
+      }
+  
+      \Drupal::logger('youtube_transcript')->notice('YouTube URL changed for term @term_id. Fetching transcript...', ['@term_id' => $term_id]);
+  
+      // Fetch transcript if the URL changed.
+      $fetcher = \Drupal::service('youtube_transcript.fetcher');
+      $result = $fetcher->fetchAndStoreTranscript($entity);
+  
+      if ($result) {
+        \Drupal::logger('youtube_transcript')->notice('Successfully fetched transcript for term @term_id.', ['@term_id' => $term_id]);
+      } else {
+        \Drupal::logger('youtube_transcript')->error('Failed to fetch transcript for term @term_id.', ['@term_id' => $term_id]);
+      }
+    }
+  }
+  

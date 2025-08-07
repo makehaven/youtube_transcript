@@ -1,0 +1,4 @@
+services:
+  youtube_transcript.fetcher:
+    class: Drupal\youtube_transcript\YoutubeTranscriptFetcher
+    arguments: ['@config.factory']
