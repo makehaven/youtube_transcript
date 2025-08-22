@@ -33,6 +33,27 @@ class YoutubeTranscriptConfigForm extends ConfigFormBase {
     $config = $this->config('youtube_transcript.settings');
     $default_redirect_uri = $config->get('google_redirect_uri') ?: 'https://dev.makehaven.org/youtube_transcript/oauth-callback';
 
+    $form['instructions'] = [
+      '#type' => 'details',
+      '#title' => $this->t('Setup Instructions'),
+      '#open' => FALSE,
+      '#markup' => $this->t('
+        <ol>
+          <li>Go to <a href="https://console.cloud.google.com/" target="_blank">Google Cloud Console</a>.</li>
+          <li>Create a new project (or select an existing one).</li>
+          <li>Enable the <strong>YouTube Data API v3</strong> for your project.</li>
+          <li>Navigate to <em>APIs & Services → Credentials</em>.</li>
+          <li>Create an <strong>OAuth 2.0 Client ID</strong> (choose type: Web Application).</li>
+          <li>Add <code>@redirect_url</code> as an authorized redirect URI.</li>
+          <li>Copy the <strong>Client ID</strong> and <strong>Client Secret</strong> into the fields below.</li>
+          <li>Save configuration, then click <strong>Authenticate with Google</strong>.</li>
+        </ol>
+      ', [
+        '@redirect_url' => Url::fromRoute('youtube_transcript.authenticate', [], ['absolute' => TRUE])->toString(),
+      ]),
+    ];
+    
+    
     $form['google_client_id'] = [
       '#type' => 'textfield',
       '#title' => $this->t('Google OAuth Client ID'),

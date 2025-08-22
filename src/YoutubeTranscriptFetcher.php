@@ -7,6 +7,8 @@ use Drupal\taxonomy\Entity\Term;
 use Google\Client as Google_Client;
 use Google\Service\YouTube;
 use Drupal\Core\File\FileSystemInterface;
+use Drupal\Core\Url;
+
 
 /**
  * Fetches YouTube transcripts and updates taxonomy terms.
