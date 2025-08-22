@@ -34,33 +34,70 @@ protected $ownerVerified = false;
   /**
    * Fetch and store transcript for a given taxonomy term.
    */
-  public function fetchAndStoreTranscript(Term $term) {
-    \Drupal::logger('youtube_transcript')->notice('Starting transcript fetch for term: @term_id', ['@term_id' => $term->id()]);
-    $youtube_urls = $term->get('field_badge_video')->getValue();
-    $youtube_url = $youtube_urls[0]['input'] ?? null;
-    if (!$youtube_url) {
-      $this->lastError = 'No YouTube URL found for term ' . $term->id();
-      \Drupal::logger('youtube_transcript')->error($this->lastError);
-      return FALSE;
-    }
-    $video_id = $this->extractVideoId($youtube_url);
-    if (!$video_id) {
-      $this->lastError = 'Invalid YouTube URL for term ' . $term->id() . ': ' . $youtube_url;
-      \Drupal::logger('youtube_transcript')->error($this->lastError);
-      return FALSE;
-    }
-    $transcript = $this->fetchTranscript($video_id, $term);
-    if ($transcript) {
-      \Drupal::logger('youtube_transcript')->notice('Transcript successfully retrieved for term @term_id.', ['@term_id' => $term->id()]);
-      $term->set('field_badge_video_transcript', $transcript);
-      $term->save();
-      return TRUE;
-    }
-    else {
-      \Drupal::logger('youtube_transcript')->error('Failed to retrieve transcript for term ' . $term->id() . '. Error: ' . $this->lastError);
-      return FALSE;
-    }
+/**
+ * Fetch and store transcript for a given taxonomy term.
+ */
+public function fetchAndStoreTranscript(Term $term) {
+  $tid = (int) $term->id();
+  $title = $term->label();
+
+  \Drupal::logger('youtube_transcript')->notice(
+    'Starting transcript fetch for term: @tid (@title)',
+    ['@tid' => $tid, '@title' => $title]
+  );
+
+  // Get the YouTube URL from the field.
+  $youtube_urls = $term->get('field_badge_video')->getValue();
+  $youtube_url = $youtube_urls[0]['input'] ?? '';
+
+  if (trim($youtube_url) === '') {
+    $this->lastError = "No YouTube URL found for term {$tid} ({$title}).";
+    \Drupal::logger('youtube_transcript')->error($this->lastError);
+    return FALSE;
   }
+
+  // Extract the video ID (supports watch?v= and youtu.be/).
+  $video_id = $this->extractVideoId($youtube_url);
+  // Helpful links we can include in messages.
+  $studio_link = $video_id ? "https://studio.youtube.com/video/{$video_id}/translations" : '';
+  $watch_link  = $video_id ? "https://www.youtube.com/watch?v={$video_id}" : $youtube_url;
+
+  if (!$video_id) {
+    $this->lastError = "Invalid YouTube URL for term {$tid} ({$title}): {$youtube_url}";
+    \Drupal::logger('youtube_transcript')->error($this->lastError);
+    return FALSE;
+  }
+
+  // Fetch the transcript (this handles OAuth, caption listing, etc).
+  $transcript = $this->fetchTranscript($video_id, $term);
+
+  if ($transcript) {
+    \Drupal::logger('youtube_transcript')->notice(
+      'Transcript successfully retrieved for term @tid (@title).',
+      ['@tid' => $tid, '@title' => $title]
+    );
+
+    // Save transcript to the field and persist the term.
+    $term->set('field_badge_video_transcript', $transcript);
+    $term->save();
+    return TRUE;
+  }
+  else {
+    // $this->lastError is already set by fetchTranscript(); append a helpful link.
+    if ($studio_link) {
+      $this->lastError .= " (YouTube Studio: {$studio_link})";
+    } elseif ($watch_link) {
+      $this->lastError .= " (Watch: {$watch_link})";
+    }
+
+    \Drupal::logger('youtube_transcript')->error(
+      'Failed to retrieve transcript for term @tid (@title). Error: @err',
+      ['@tid' => $tid, '@title' => $title, '@err' => $this->lastError]
+    );
+    return FALSE;
+  }
+}
+
 
   /**
    * Extracts YouTube video ID from different URL formats.

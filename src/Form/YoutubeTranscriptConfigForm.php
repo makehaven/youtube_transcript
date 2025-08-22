@@ -4,7 +4,6 @@ namespace Drupal\youtube_transcript\Form;
 
 use Drupal\Core\Form\ConfigFormBase;
 use Drupal\Core\Form\FormStateInterface;
-use Drupal\Core\Link;
 use Drupal\Core\Url;
 
 /**
@@ -31,29 +30,33 @@ class YoutubeTranscriptConfigForm extends ConfigFormBase {
    */
   public function buildForm(array $form, FormStateInterface $form_state) {
     $config = $this->config('youtube_transcript.settings');
-    $default_redirect_uri = $config->get('google_redirect_uri') ?: 'https://dev.makehaven.org/youtube_transcript/oauth-callback';
+    $default_redirect_uri = $config->get('google_redirect_uri') ?: Url::fromRoute('youtube_transcript.oauth_callback', [], ['absolute' => TRUE])->toString();
 
+    // Setup instructions (rendered inside a <details>).
     $form['instructions'] = [
       '#type' => 'details',
       '#title' => $this->t('Setup Instructions'),
       '#open' => FALSE,
+    ];
+    $form['instructions']['content'] = [
+      '#type' => 'item',
       '#markup' => $this->t('
         <ol>
-          <li>Go to <a href="https://console.cloud.google.com/" target="_blank">Google Cloud Console</a>.</li>
+          <li>Go to <a href="https://console.cloud.google.com/" target="_blank" rel="noopener">Google Cloud Console</a>.</li>
           <li>Create a new project (or select an existing one).</li>
           <li>Enable the <strong>YouTube Data API v3</strong> for your project.</li>
-          <li>Navigate to <em>APIs & Services → Credentials</em>.</li>
-          <li>Create an <strong>OAuth 2.0 Client ID</strong> (choose type: Web Application).</li>
-          <li>Add <code>@redirect_url</code> as an authorized redirect URI.</li>
-          <li>Copy the <strong>Client ID</strong> and <strong>Client Secret</strong> into the fields below.</li>
-          <li>Save configuration, then click <strong>Authenticate with Google</strong>.</li>
+          <li>Navigate to <em>APIs &amp; Services → Credentials</em>.</li>
+          <li>Create an <strong>OAuth 2.0 Client ID</strong> (type: <em>Web application</em>).</li>
+          <li>Add <code>@redirect_url</code> as an <em>Authorized redirect URI</em>.</li>
+          <li>Copy the <strong>Client ID</strong> and <strong>Client Secret</strong> below, then save.</li>
+          <li>Click <strong>Authenticate with Google</strong>. When the OAuth flow completes, return to this page.</li>
         </ol>
       ', [
-        '@redirect_url' => Url::fromRoute('youtube_transcript.authenticate', [], ['absolute' => TRUE])->toString(),
+        '@redirect_url' => Url::fromRoute('youtube_transcript.oauth_callback', [], ['absolute' => TRUE])->toString(),
       ]),
     ];
-    
-    
+
+    // OAuth credentials.
     $form['google_client_id'] = [
       '#type' => 'textfield',
       '#title' => $this->t('Google OAuth Client ID'),
@@ -72,12 +75,11 @@ class YoutubeTranscriptConfigForm extends ConfigFormBase {
       '#type' => 'textfield',
       '#title' => $this->t('OAuth Redirect URI'),
       '#default_value' => $default_redirect_uri,
-      '#description' => $this->t('Set this as an authorized redirect URI in your Google Cloud Console. For example: https://dev.makehaven.org/youtube_transcript/oauth-callback'),
+      '#description' => $this->t('This must exactly match an Authorized Redirect URI in Google Cloud Console.'),
       '#required' => TRUE,
     ];
 
-    // Button to start Google OAuth authentication.
-
+    // Authenticate link (routes to your controller that starts the OAuth flow).
     $form['authenticate'] = [
       '#type' => 'link',
       '#title' => $this->t('Authenticate with Google'),
@@ -87,153 +89,206 @@ class YoutubeTranscriptConfigForm extends ConfigFormBase {
       ],
     ];
 
-    
+    // Batch controls.
+    $form['batch_settings'] = [
+      '#type' => 'details',
+      '#title' => $this->t('Batch Processing'),
+      '#open' => TRUE,
+    ];
+    $form['batch_settings']['batch_size'] = [
+      '#type' => 'number',
+      '#title' => $this->t('Batch size'),
+      '#default_value' => $config->get('batch_size') ?: 20,
+      '#min' => 1,
+      '#max' => 500,
+      '#description' => $this->t('How many terms to process per run. Smaller batches help avoid YouTube quota issues.'),
+    ];
+    $form['batch_settings']['start_offset'] = [
+      '#type' => 'number',
+      '#title' => $this->t('Start offset'),
+      '#default_value' => $config->get('start_offset') ?: 0,
+      '#min' => 0,
+      '#description' => $this->t('Zero-based index into the badges list. Each run starts here; after a run this value auto-increments by the number processed.'),
+    ];
+    $form['batch_settings']['reset_offset'] = [
+      '#type' => 'submit',
+      '#value' => $this->t('Reset offset to 0'),
+      '#submit' => ['::resetOffset'],
+      '#limit_validation_errors' => [],
+    ];
 
-    // Button to fetch all transcripts.
-    $form['fetch_all_transcripts'] = [
+    // Buttons to fetch and to reset caches.
+    $form['actions'] = [
+      '#type' => 'actions',
+    ];
+    $form['actions']['fetch_all_transcripts'] = [
       '#type' => 'submit',
       '#value' => $this->t('Fetch All Transcripts'),
       '#submit' => ['::fetchAllTranscripts'],
     ];
-
-    
-
-    // ADD in buildForm() to render a reset link:
-$form['reset_queue'] = [
-  '#type' => 'submit',
-  '#value' => $this->t('Reset Transcript Queue'),
-  '#submit' => ['::resetTranscriptQueue'],
-  '#limit_validation_errors' => [],
-];
-
-    // In buildForm():
-    $form['reset_cache'] = [
+    $form['actions']['reset_cache'] = [
       '#type' => 'submit',
       '#value' => $this->t('Reset Caption Cache'),
       '#submit' => ['::resetTranscriptCache'],
       '#limit_validation_errors' => [],
     ];
+    // (Optional legacy) reset old queue state keys, if you had them before.
+    $form['actions']['reset_queue'] = [
+      '#type' => 'submit',
+      '#value' => $this->t('Reset Transcript Queue (legacy)'),
+      '#submit' => ['::resetTranscriptQueue'],
+      '#limit_validation_errors' => [],
+    ];
 
-    // --- Test Section (Top Level) ---
-    // Ensure the field is top-level by not nesting it and explicitly set default_value.
-    $form['test_video_url'] = [
+    // Test section (does not save the config).
+    $form['test'] = [
+      '#type' => 'details',
+      '#title' => $this->t('One-off Test'),
+      '#open' => FALSE,
+    ];
+    $form['test']['test_video_url'] = [
       '#type' => 'textfield',
       '#title' => $this->t('Test Video URL'),
       '#default_value' => '',
       '#description' => $this->t('Enter a YouTube video URL to test transcript fetching without updating all badges.'),
-      '#tree' => FALSE,
     ];
-    $form['test_transcript'] = [
+    $form['test']['test_transcript'] = [
       '#type' => 'submit',
       '#value' => $this->t('Test Transcript'),
       '#submit' => ['::testTranscript'],
-      // Prevent full form validation so only this part is processed.
       '#limit_validation_errors' => [],
     ];
-    // --- End Test Section ---
 
     return parent::buildForm($form, $form_state);
   }
 
   /**
-   * Fetches all transcripts when the admin clicks the button.
+   * Fetches all transcripts (batch by offset/size).
    */
-// REPLACE the whole fetchAllTranscripts() in the form class:
-
   public function fetchAllTranscripts(array &$form, FormStateInterface $form_state) {
-    $state = \Drupal::state();
-    $storage = \Drupal::entityTypeManager()->getStorage('taxonomy_term');
-  
-    // Build queue once: only terms in 'badges' vocabulary that have a YouTube URL.
-    $queue = $state->get('youtube_transcript.queue', []);
-    $offset = (int) $state->get('youtube_transcript.offset', 0);
-  
-    if (empty($queue)) {
-      $tids = [];
-      $terms = $storage->loadByProperties(['vid' => 'badges']);
-      foreach ($terms as $term) {
-        $vals = $term->get('field_badge_video')->getValue();
-        $url = $vals[0]['input'] ?? '';
-        if (!empty($url)) {
-          $tids[] = (int) $term->id();
-        }
-      }
-      sort($tids, SORT_NUMERIC);
-      $queue = $tids;
-      $offset = 0;
-      $state->set('youtube_transcript.queue', $queue);
-      $state->set('youtube_transcript.offset', $offset);
-      $this->messenger()->addStatus($this->t('Initialized queue with @n terms.', ['@n' => count($queue)]));
-    }
-  
-    if ($offset >= count($queue)) {
-      $this->messenger()->addStatus($this->t('All items already processed.'));
+    $config = $this->config('youtube_transcript.settings');
+
+    $batch_size = (int) ($config->get('batch_size') ?? 20);
+    if ($batch_size < 1) { $batch_size = 1; }
+
+    $offset = (int) ($config->get('start_offset') ?? 0);
+    if ($offset < 0) { $offset = 0; }
+
+    // Get all badge term IDs in a stable order.
+    $ids = \Drupal::entityQuery('taxonomy_term')
+      ->condition('vid', 'badges')
+      ->sort('tid', 'ASC')
+      ->execute();
+
+    $total = count($ids);
+    if ($total === 0) {
+      $this->messenger()->addWarning($this->t('No badge terms found.'));
       return;
     }
-  
+    if ($offset >= $total) {
+      $this->messenger()->addWarning($this->t('Start offset (@offset) is beyond the end of the list (@total). Resetting to 0.', [
+        '@offset' => $offset, '@total' => $total
+      ]));
+      $offset = 0;
+    }
+
+    $window_ids = array_slice(array_values($ids), $offset, $batch_size);
+    $storage = \Drupal::entityTypeManager()->getStorage('taxonomy_term');
+    $terms = $storage->loadMultiple($window_ids);
+
     $fetcher = \Drupal::service('youtube_transcript.fetcher');
-  
-    // Tune this to control quota usage per click/cron run.
-    $batch_size = 10;
+
     $processed = 0;
-  
-    while ($processed < $batch_size && $offset < count($queue)) {
-      $tid = $queue[$offset];
-      $term = $storage->load($tid);
-      $offset++;
-      if (!$term) {
-        continue;
-      }
-  
+    $processed_ids = [];
+
+    foreach ($terms as $term) {
       $ok = $fetcher->fetchAndStoreTranscript($term);
       $processed++;
-  
+      $processed_ids[] = (int) $term->id();
+
       if (!$ok) {
         $err = (string) $fetcher->getLastError();
-        // Stop on quota‑type messages (don’t burn more calls).
-        if (stripos($err, 'quota') !== FALSE || stripos($err, 'quotaExceeded') !== FALSE) {
-          $state->set('youtube_transcript.offset', $offset);
-          $this->messenger()->addError($this->t('Stopped early due to quota: @e. Progress saved at offset @off/@total.', [
-            '@e' => $err,
-            '@off' => $offset,
-            '@total' => count($queue),
+
+        // Build a watch URL for helpful messages.
+        $youtube_urls = $term->get('field_badge_video')->getValue();
+        $youtube_url = $youtube_urls[0]['input'] ?? '';
+        $vid = NULL;
+        if (preg_match('/v=([a-zA-Z0-9_-]+)/', $youtube_url, $m)) {
+          $vid = $m[1];
+        } elseif (preg_match('/youtu\.be\/([a-zA-Z0-9_-]+)/', $youtube_url, $m)) {
+          $vid = $m[1];
+        }
+        $watch_url = $vid ? "https://www.youtube.com/watch?v={$vid}" : $youtube_url;
+
+        if (stripos($err, 'auto-generated (ASR)') !== FALSE) {
+          $this->messenger()->addWarning($this->t(
+            'Term @tid skipped: only auto-generated (ASR) captions exist (API cannot download ASR). <a href=":url" target="_blank" rel="noopener">Open on YouTube</a> to add a manual caption (SRT/VTT), then retry.',
+            ['@tid' => $term->id(), ':url' => $watch_url]
+          ));
+        } else {
+          $this->messenger()->addWarning($this->t('Error on term @tid: @err', [
+            '@tid' => $term->id(), '@err' => $err
           ]));
+        }
+
+        // Stop early on quota-related errors.
+        if (stripos($err, 'quota') !== FALSE) {
+          $new_offset = $offset + $processed;
+          $this->configFactory->getEditable('youtube_transcript.settings')
+            ->set('start_offset', $new_offset >= $total ? 0 : $new_offset)
+            ->save();
+
+          $this->messenger()->addError($this->t(
+            'Stopped early due to quota after @n items. Progress: @done / @total. Next run will start at offset @next.',
+            [
+              '@n' => $processed,
+              '@done' => min($offset + $processed, $total),
+              '@total' => $total,
+              '@next' => $new_offset >= $total ? 0 : $new_offset,
+            ]
+          ));
           return;
         }
-        // For other errors, just log and continue to the next term.
-        $this->messenger()->addWarning($this->t('Error on term @tid: @e', ['@tid' => $tid, '@e' => $err]));
       }
     }
-  
-    // Save progress.
-    $state->set('youtube_transcript.offset', $offset);
-  
-    // Finished?
-    if ($offset >= count($queue)) {
-      // Clear queue markers so a future click starts fresh.
-      $state->delete('youtube_transcript.queue');
-      $state->delete('youtube_transcript.offset');
-      $this->messenger()->addStatus($this->t('Completed all items. Processed @n total this run.', ['@n' => $processed]));
+
+    // Remember last batch (useful for a “Re-run last batch” action if you add one).
+    \Drupal::state()->set('youtube_transcript.last_batch', $processed_ids);
+
+    // Bump offset (wrap to 0 at the end).
+    $new_offset = $offset + $processed;
+    if ($new_offset >= $total) {
+      $new_offset = 0;
+      $this->messenger()->addStatus($this->t('Reached the end of the list. Offset wrapped to 0.'));
     }
-    else {
-      $this->messenger()->addStatus($this->t('Processed @n this run. Progress: @off / @total. Click again later to continue.', [
+    $this->configFactory->getEditable('youtube_transcript.settings')
+      ->set('start_offset', $new_offset)
+      ->save();
+
+    $this->messenger()->addStatus($this->t(
+      'Processed @n this run. Progress: @done / @total. Next start offset: @next.',
+      [
         '@n' => $processed,
-        '@off' => $offset,
-        '@total' => count($queue),
-      ]));
-    }
+        '@done' => min($offset + $processed, $total),
+        '@total' => $total,
+        '@next' => $new_offset,
+      ]
+    ));
   }
-  
-    // ADD THIS WHOLE METHOD inside the YoutubeTranscriptConfigForm class.
-    public function resetTranscriptQueue(array &$form, FormStateInterface $form_state) {
-      $state = \Drupal::state();
-      $state->delete('youtube_transcript.queue');
-      $state->delete('youtube_transcript.offset');
-      $this->messenger()->addStatus($this->t('Transcript queue has been reset. Click "Fetch All Transcripts" to rebuild and start again.'));
-    }
-  
 
+  /**
+   * Reset (legacy) queue state keys from older versions.
+   */
+  public function resetTranscriptQueue(array &$form, FormStateInterface $form_state) {
+    $state = \Drupal::state();
+    $state->delete('youtube_transcript.queue');
+    $state->delete('youtube_transcript.offset');
+    $this->messenger()->addStatus($this->t('Legacy transcript queue state cleared. The module now uses offset + batch size.'));
+  }
 
+  /**
+   * Clears cached manual caption IDs.
+   */
   public function resetTranscriptCache(array &$form, FormStateInterface $form_state) {
     $store = \Drupal::keyValue('youtube_transcript');
     $state = \Drupal::state();
@@ -245,6 +300,56 @@ $form['reset_queue'] = [
     $this->messenger()->addStatus($this->t('Caption cache has been reset.'));
   }
 
+  /**
+   * Resets the start offset to 0.
+   */
+  public function resetOffset(array &$form, FormStateInterface $form_state) {
+    $this->configFactory->getEditable('youtube_transcript.settings')
+      ->set('start_offset', 0)
+      ->save();
+    $this->messenger()->addStatus($this->t('Start offset reset to 0.'));
+  }
+
+  /**
+   * One-off tester for a single video URL.
+   */
+  public function testTranscript(array &$form, FormStateInterface $form_state) {
+    $user_input = $form_state->getUserInput();
+    if (empty($user_input['test_video_url'])) {
+      $this->messenger()->addError($this->t('Please enter a YouTube video URL.'));
+      return;
+    }
+    $video_url = $user_input['test_video_url'];
+
+    // Extract a video ID.
+    $video_id = NULL;
+    if (preg_match('/v=([a-zA-Z0-9_-]+)/', $video_url, $m)) {
+      $video_id = $m[1];
+    }
+    elseif (preg_match('/youtu\.be\/([a-zA-Z0-9_-]+)/', $video_url, $m)) {
+      $video_id = $m[1];
+    }
+    if (!$video_id) {
+      $this->messenger()->addError($this->t('Invalid YouTube URL.'));
+      return;
+    }
+
+    $fetcher = \Drupal::service('youtube_transcript.fetcher');
+    try {
+      $transcript = $fetcher->testTranscript($video_id);
+      if ($transcript) {
+        $this->messenger()->addStatus($this->t('Transcript fetched successfully.'));
+      } else {
+        $err = (string) $fetcher->getLastError();
+        $this->messenger()->addError($this->t('No transcript returned. @err', ['@err' => $err ?: '']));
+      }
+    }
+    catch (\Throwable $e) {
+      $this->messenger()->addError($this->t('Failed to fetch transcript. Error: @msg', [
+        '@msg' => $e->getMessage(),
+      ]));
+    }
+  }
 
   /**
    * Saves configuration settings.
@@ -254,9 +359,11 @@ $form['reset_queue'] = [
       ->set('google_client_id', $form_state->getValue('google_client_id'))
       ->set('google_client_secret', $form_state->getValue('google_client_secret'))
       ->set('google_redirect_uri', $form_state->getValue('google_redirect_uri'))
+      ->set('batch_size', max(1, (int) $form_state->getValue('batch_size')))
+      ->set('start_offset', max(0, (int) $form_state->getValue('start_offset')))
       ->save();
 
-    return parent::submitForm($form, $form_state);
+    parent::submitForm($form, $form_state);
   }
 
 }
