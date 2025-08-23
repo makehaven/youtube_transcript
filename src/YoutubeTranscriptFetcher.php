@@ -408,73 +408,85 @@ try {
 /**
  * Download a caption track and return plain text.
  *
- * - Manual ("standard") tracks: downloads in SRT when possible, with a
- *   fallback to the default (often TTML). TTML is stripped to text.
- * - Auto ("asr") tracks: explicitly blocked here for clarity (the API
- *   generally forbids downloading ASR). Callers should not pass $is_auto=TRUE.
+ * - Manual ("standard") tracks: try SRT, then fallback (often TTML) and strip.
+ * - Auto ("asr") tracks: not downloadable via API -> we block earlier,
+ *   but keep guard here too.
  */
 protected function downloadTranscript($caption_id, YouTube $youtube, $is_auto = false, $lang = 'en') {
-  // Guard: we should not attempt to download ASR tracks via API.
+  // Guard: API does not allow downloading ASR tracks.
   if ($is_auto) {
     $msg = 'Auto-generated (ASR) captions are not downloadable via the YouTube API.';
     \Drupal::logger('youtube_transcript')->warning($msg);
-    throw new \RuntimeException($msg);
+    $this->lastError = $msg;
+    return NULL;
   }
 
-  // Helper to clean text from various formats (SRT/TTML/JSON-ish).
+  // Helper to clean text from SRT/TTML.
   $clean = static function (string $raw): string {
-    // Strip UTF-8 BOM if present.
     if (strncmp($raw, "\xEF\xBB\xBF", 3) === 0) {
       $raw = substr($raw, 3);
     }
-
     $trimmed = ltrim($raw);
 
-    // If it looks like XML/TTML, strip tags and decode entities.
+    // TTML/XML -> strip tags + decode entities + tidy whitespace.
     if (strlen($trimmed) && $trimmed[0] === '<') {
-      // Remove all tags.
       $text = strip_tags($raw);
-      // Decode basic HTML entities.
       $text = html_entity_decode($text, ENT_QUOTES | ENT_XML1, 'UTF-8');
-      // Normalize excessive whitespace.
       $text = preg_replace('/[ \t]+/u', ' ', $text);
       $text = preg_replace('/\R{2,}/u', "\n\n", $text);
       return trim($text);
     }
-
-    // Otherwise return trimmed body (SRT or plain text).
+    // SRT or plain text.
     return trim($raw);
   };
 
+  // Try SRT first, then fallback (some tracks reject tfmt).
   try {
-    // First try to request SRT explicitly (cleanest to post-process).
-    // Some caption tracks may reject tfmt; we'll fallback if that happens.
     try {
       \Drupal::logger('youtube_transcript')->notice(
-        'Attempting SRT download for caption @id',
-        ['@id' => $caption_id]
+        'Attempting SRT download for caption @id', ['@id' => $caption_id]
       );
       $response = $youtube->captions->download($caption_id, ['tfmt' => 'srt']);
-    }
-    catch (\Google\Service\Exception $e) {
-      // Fallback: try without tfmt (YouTube may return TTML).
+    } catch (\Google\Service\Exception $e) {
+      // If SRT request fails for any reason other than auth/forbidden, try no tfmt.
+      $msg = $e->getMessage();
+      // If this is a permissions issue, handle below in the outer catch.
+      if (stripos($msg, '"forbidden"') !== false || stripos($msg, 'insufficient') !== false) {
+        throw $e;
+      }
       \Drupal::logger('youtube_transcript')->notice(
-        'SRT download not available for caption @id. Falling back without tfmt. Error: @err',
-        ['@id' => $caption_id, '@err' => $e->getMessage()]
+        'SRT not available for caption @id, retrying without tfmt. Error: @err',
+        ['@id' => $caption_id, '@err' => $msg]
       );
       $response = $youtube->captions->download($caption_id);
     }
 
-    // Read body and clean.
     $content = (string) $response->getBody();
     \Drupal::logger('youtube_transcript')->notice(
       'Caption raw content (first 400 chars): @preview',
       ['@preview' => mb_substr($content, 0, 400)]
     );
-
     return $clean($content);
   }
   catch (\Google\Service\Exception $e) {
+    // Classify "forbidden" (not owner / third‑party contributions / ASR) and return NULL.
+    $msg = $e->getMessage();
+
+    // Extract common signals from Google error payload.
+    $is_forbidden = stripos($msg, '"forbidden"') !== false
+      || stripos($msg, 'not sufficient to download the caption track') !== false
+      || stripos($msg, 'third-party contributions') !== false;
+
+    if ($is_forbidden) {
+      $this->lastError =
+        'Permissions are not sufficient to download this caption track. ' .
+        'Make sure you are authenticated as the channel owner/manager and that a manual (non‑ASR) caption exists. ' .
+        'If the caption was added by a third party, upload your own SRT/VTT in YouTube Studio and try again.';
+      \Drupal::logger('youtube_transcript')->warning($this->lastError . ' Google response: ' . $msg);
+      return NULL; // Let the caller log a friendly message with Studio link and continue.
+    }
+
+    // Other Google errors (e.g., quotaExceeded) — bubble up with context.
     $msg = 'Error downloading transcript (Google Service): ' . $e->getMessage();
     \Drupal::logger('youtube_transcript')->error($msg);
     throw new \RuntimeException($msg, 0, $e);
