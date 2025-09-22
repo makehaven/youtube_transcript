@@ -176,9 +176,9 @@ class YoutubeTranscriptConfigForm extends ConfigFormBase {
 
     // Get all badge term IDs in a stable order.
     $ids = \Drupal::entityQuery('taxonomy_term')
+      ->accessCheck(FALSE)
       ->condition('vid', 'badges')
       ->sort('tid', 'ASC')
-      ->accessCheck(FALSE)
       ->execute();
 
     $total = count($ids);
