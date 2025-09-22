@@ -178,6 +178,7 @@ class YoutubeTranscriptConfigForm extends ConfigFormBase {
     $ids = \Drupal::entityQuery('taxonomy_term')
       ->condition('vid', 'badges')
       ->sort('tid', 'ASC')
+      ->accessCheck(FALSE)
       ->execute();
 
     $total = count($ids);

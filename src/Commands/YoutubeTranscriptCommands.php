@@ -23,7 +23,10 @@ class YoutubeTranscriptCommands extends DrushCommands {
    * @command youtube_transcript:fetch
    */
   public function fetchTranscripts() {
-    $terms = \Drupal::entityTypeManager()->getStorage('taxonomy_term')->loadByProperties(['vid' => 'badges']);
+    $query = \Drupal::entityTypeManager()->getStorage('taxonomy_term')->getQuery();
+    $query->condition('vid', 'badges')->accessCheck(FALSE);
+    $tids = $query->execute();
+    $terms = Term::loadMultiple($tids);
     foreach ($terms as $term) {
       $this->fetcher->fetchAndStoreTranscript($term);
     }
