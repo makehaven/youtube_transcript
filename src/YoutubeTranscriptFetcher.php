@@ -41,10 +41,21 @@ public function fetchAndStoreTranscript(Term $term) {
   $tid = (int) $term->id();
   $title = $term->label();
 
+  $config = $this->configFactory->get('youtube_transcript.settings');
+  $skip_existing = (bool) ($config->get('skip_existing_transcripts') ?? TRUE);
+
   \Drupal::logger('youtube_transcript')->notice(
     'Starting transcript fetch for term: @tid (@title)',
     ['@tid' => $tid, '@title' => $title]
   );
+
+  if ($skip_existing && !$term->get('field_badge_video_transcript')->isEmpty()) {
+    \Drupal::logger('youtube_transcript')->notice(
+      'Skipping term @tid (@title) because a transcript already exists and skip is enabled.',
+      ['@tid' => $tid, '@title' => $title]
+    );
+    return TRUE;
+  }
 
   // Get the YouTube URL from the field.
   $youtube_urls = $term->get('field_badge_video')->getValue();

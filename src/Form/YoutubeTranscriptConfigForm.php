@@ -110,6 +110,12 @@ class YoutubeTranscriptConfigForm extends ConfigFormBase {
       '#min' => 0,
       '#description' => $this->t('Zero-based index into the badges list. Each run starts here; after a run this value auto-increments by the number processed.'),
     ];
+    $form['batch_settings']['skip_existing_transcripts'] = [
+      '#type' => 'checkbox',
+      '#title' => $this->t('Skip terms that already have a transcript'),
+      '#default_value' => $config->get('skip_existing_transcripts') ?? TRUE,
+      '#description' => $this->t('When checked, badge terms with a non-empty transcript field are skipped to conserve YouTube API quota.'),
+    ];
     $form['batch_settings']['reset_offset'] = [
       '#type' => 'submit',
       '#value' => $this->t('Reset offset to 0'),
@@ -206,6 +212,10 @@ class YoutubeTranscriptConfigForm extends ConfigFormBase {
       $ok = $fetcher->fetchAndStoreTranscript($term);
       $processed++;
       $processed_ids[] = (int) $term->id();
+      $term_label = $term->label();
+      $term_edit_url = Url::fromRoute('entity.taxonomy_term.edit_form', [
+        'taxonomy_term' => $term->id(),
+      ], ['absolute' => TRUE])->toString();
 
       if (!$ok) {
         $err = (string) $fetcher->getLastError();
@@ -220,16 +230,36 @@ class YoutubeTranscriptConfigForm extends ConfigFormBase {
           $vid = $m[1];
         }
         $watch_url = $vid ? "https://www.youtube.com/watch?v={$vid}" : $youtube_url;
+        $studio_url = $vid ? "https://studio.youtube.com/video/{$vid}/translations" : NULL;
 
         if (stripos($err, 'auto-generated (ASR)') !== FALSE) {
-          $this->messenger()->addWarning($this->t(
-            'Term @tid skipped: only auto-generated (ASR) captions exist (API cannot download ASR). <a href=":url" target="_blank" rel="noopener">Open on YouTube</a> to add a manual caption (SRT/VTT), then retry.',
-            ['@tid' => $term->id(), ':url' => $watch_url]
-          ));
+          $tokens = [
+            '@tid' => $term->id(),
+            '@label' => $term_label,
+            ':url' => $watch_url,
+            ':edit' => $term_edit_url,
+          ];
+          if ($studio_url) {
+            $tokens[':studio'] = $studio_url;
+          }
+          $message = $studio_url
+            ? 'Term @tid (@label) skipped: only auto-generated (ASR) captions exist (API cannot download ASR). <a href=":studio" target="_blank" rel="noopener">Open YouTube Studio</a> to add/upload a manual caption (SRT/VTT), then retry. <a href=":url" target="_blank" rel="noopener">Watch on YouTube</a>. <a href=":edit" target="_blank" rel="noopener">Edit term</a>.'
+            : 'Term @tid (@label) skipped: only auto-generated (ASR) captions exist (API cannot download ASR). <a href=":url" target="_blank" rel="noopener">Open on YouTube</a> to add a manual caption (SRT/VTT), then retry. <a href=":edit" target="_blank" rel="noopener">Edit term</a>.';
+          $this->messenger()->addWarning($this->t($message, $tokens));
         } else {
-          $this->messenger()->addWarning($this->t('Error on term @tid: @err', [
-            '@tid' => $term->id(), '@err' => $err
-          ]));
+          $tokens = [
+            '@tid' => $term->id(),
+            '@label' => $term_label,
+            '@err' => $err,
+            ':edit' => $term_edit_url,
+          ];
+          if ($studio_url) {
+            $tokens[':studio'] = $studio_url;
+          }
+          $message = $studio_url
+            ? 'Error on term @tid (@label): @err <a href=":studio" target="_blank" rel="noopener">Open YouTube Studio</a>. <a href=":edit" target="_blank" rel="noopener">Edit term</a>.'
+            : 'Error on term @tid (@label): @err <a href=":edit" target="_blank" rel="noopener">Edit term</a>.';
+          $this->messenger()->addWarning($this->t($message, $tokens));
         }
 
         // Stop early on quota-related errors.
@@ -362,6 +392,7 @@ class YoutubeTranscriptConfigForm extends ConfigFormBase {
       ->set('google_redirect_uri', $form_state->getValue('google_redirect_uri'))
       ->set('batch_size', max(1, (int) $form_state->getValue('batch_size')))
       ->set('start_offset', max(0, (int) $form_state->getValue('start_offset')))
+      ->set('skip_existing_transcripts', (bool) $form_state->getValue('skip_existing_transcripts'))
       ->save();
 
     parent::submitForm($form, $form_state);
