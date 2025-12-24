@@ -1,7 +1,7 @@
 name: 'YouTube Transcript Fetcher'
 type: module
 description: 'Fetches YouTube video transcripts and stores them in a taxonomy term field.'
-core_version_requirement: ^10
+core_version_requirement: ^10 || ^11
 package: Custom
 dependencies:
   - drupal:taxonomy
