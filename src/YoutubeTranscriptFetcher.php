@@ -113,7 +113,7 @@ public function fetchAndStoreTranscript(Term $term) {
   /**
    * Extracts YouTube video ID from different URL formats.
    */
-  protected function extractVideoId($url) {
+  public function extractVideoId($url) {
     // youtu.be/{id}
     if (preg_match('/youtu\.be\/([a-zA-Z0-9_-]{6,})/i', $url, $m)) {
       return $m[1];
@@ -510,6 +510,75 @@ protected function downloadTranscript($caption_id, YouTube $youtube, $is_auto = 
 }
 
 
+
+  /**
+   * Fetch and store transcripts for all tool_video paragraphs on a node.
+   *
+   * Iterates field_item_videos on an item node. For each paragraph that has
+   * field_video_url set but field_video_transcript empty (unless $overwrite is
+   * TRUE), fetches the YouTube transcript and saves it to field_video_transcript.
+   *
+   * @param \Drupal\node\NodeInterface $node
+   *   The item node.
+   * @param bool $overwrite
+   *   If TRUE, overwrite existing transcripts. Defaults to FALSE.
+   *
+   * @return array
+   *   Keyed by paragraph ID: TRUE on success, FALSE on failure, NULL if skipped.
+   */
+  public function fetchForNode(\Drupal\node\NodeInterface $node, bool $overwrite = FALSE): array {
+    $results = [];
+
+    if (!$node->hasField('field_item_videos') || $node->get('field_item_videos')->isEmpty()) {
+      return $results;
+    }
+
+    foreach ($node->get('field_item_videos')->referencedEntities() as $paragraph) {
+      if ($paragraph->bundle() !== 'tool_video') {
+        continue;
+      }
+
+      $pid = $paragraph->id();
+
+      if (!$paragraph->hasField('field_video_url') || $paragraph->get('field_video_url')->isEmpty()) {
+        \Drupal::logger('youtube_transcript')->notice('Paragraph @pid has no video URL, skipping.', ['@pid' => $pid]);
+        $results[$pid] = NULL;
+        continue;
+      }
+
+      $has_transcript = $paragraph->hasField('field_video_transcript')
+        && !$paragraph->get('field_video_transcript')->isEmpty();
+
+      if ($has_transcript && !$overwrite) {
+        \Drupal::logger('youtube_transcript')->notice('Paragraph @pid already has transcript, skipping.', ['@pid' => $pid]);
+        $results[$pid] = NULL;
+        continue;
+      }
+
+      $url = $paragraph->get('field_video_url')->first()->input ?? '';
+      $video_id = $this->extractVideoId($url);
+
+      if (!$video_id) {
+        \Drupal::logger('youtube_transcript')->error('Invalid YouTube URL for paragraph @pid: @url', ['@pid' => $pid, '@url' => $url]);
+        $results[$pid] = FALSE;
+        continue;
+      }
+
+      $transcript = $this->fetchTranscript($video_id);
+
+      if ($transcript) {
+        $paragraph->set('field_video_transcript', $transcript);
+        $paragraph->save();
+        \Drupal::logger('youtube_transcript')->notice('Transcript saved for paragraph @pid (video @vid).', ['@pid' => $pid, '@vid' => $video_id]);
+        $results[$pid] = TRUE;
+      }
+      else {
+        $results[$pid] = FALSE;
+      }
+    }
+
+    return $results;
+  }
 
   /**
    * Public method for testing transcript fetch.

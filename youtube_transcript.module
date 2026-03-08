@@ -5,6 +5,93 @@ use Drupal\youtube_transcript\YoutubeTranscriptFetcher;
 use Drupal\Core\Logger\LoggerChannelFactoryInterface;
 
 /**
+ * Implements hook_cron().
+ *
+ * Finds tool_video paragraphs that have a video URL but no transcript yet,
+ * and fetches up to 10 per cron run to avoid timeouts. Already-populated
+ * transcripts are never touched.
+ */
+function youtube_transcript_cron() {
+  $logger = \Drupal::logger('youtube_transcript');
+  $storage = \Drupal::entityTypeManager()->getStorage('paragraph');
+
+  // Find tool_video paragraphs with a URL but empty transcript.
+  // Process in ascending ID order; track the last processed ID in state so
+  // each cron run picks up where the previous left off (round-robin).
+  $last_id = \Drupal::state()->get('youtube_transcript.cron_last_pid', 0);
+  $limit = 10;
+
+  // Match paragraphs where transcript is absent (no row) OR blank (empty string).
+  $or = \Drupal::entityQuery('paragraph')->orConditionGroup()
+    ->notExists('field_video_transcript')
+    ->condition('field_video_transcript', '', '=');
+
+  $ids = $storage->getQuery()
+    ->condition('type', 'tool_video')
+    ->condition('field_video_url', '', '<>')
+    ->condition($or)
+    ->condition('id', $last_id, '>')
+    ->sort('id', 'ASC')
+    ->range(0, $limit)
+    ->accessCheck(FALSE)
+    ->execute();
+
+  // If nothing above last_id, wrap around to catch any newly added paragraphs
+  // from the beginning of the list.
+  if (empty($ids)) {
+    \Drupal::state()->set('youtube_transcript.cron_last_pid', 0);
+    return;
+  }
+
+  /** @var \Drupal\youtube_transcript\YoutubeTranscriptFetcher $fetcher */
+  $fetcher = \Drupal::service('youtube_transcript.fetcher');
+  $processed = 0;
+
+  foreach ($storage->loadMultiple($ids) as $paragraph) {
+    $pid = $paragraph->id();
+
+    // Double-check transcript is still empty (another process may have filled it).
+    if (!$paragraph->get('field_video_transcript')->isEmpty()) {
+      \Drupal::state()->set('youtube_transcript.cron_last_pid', $pid);
+      continue;
+    }
+
+    $url = $paragraph->get('field_video_url')->first()->input ?? '';
+    if (empty($url)) {
+      \Drupal::state()->set('youtube_transcript.cron_last_pid', $pid);
+      continue;
+    }
+
+    $video_id = $fetcher->extractVideoId($url);
+
+    if (!$video_id) {
+      $logger->warning('youtube_transcript cron: invalid URL for paragraph @pid: @url', ['@pid' => $pid, '@url' => $url]);
+      \Drupal::state()->set('youtube_transcript.cron_last_pid', $pid);
+      continue;
+    }
+
+    // fetchTranscript is also protected — use the public testTranscript wrapper.
+    $transcript = $fetcher->testTranscript($video_id);
+
+    if ($transcript) {
+      $paragraph->set('field_video_transcript', $transcript);
+      $paragraph->save();
+      $logger->notice('youtube_transcript cron: saved transcript for paragraph @pid (video @vid).', ['@pid' => $pid, '@vid' => $video_id]);
+      $processed++;
+    }
+    else {
+      $logger->warning('youtube_transcript cron: failed for paragraph @pid: @err', ['@pid' => $pid, '@err' => $fetcher->getLastError()]);
+    }
+
+    \Drupal::state()->set('youtube_transcript.cron_last_pid', $pid);
+  }
+
+  if ($processed > 0) {
+    $logger->notice('youtube_transcript cron: fetched @n transcript(s) this run.', ['@n' => $processed]);
+  }
+}
+
+/**
  * Implements hook_entity_presave().
  */
 function youtube_transcript_entity_presave(\Drupal\Core\Entity\EntityInterface $entity) {
