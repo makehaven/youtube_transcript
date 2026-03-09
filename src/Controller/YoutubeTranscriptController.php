@@ -87,4 +87,36 @@ class YoutubeTranscriptController extends ControllerBase {
     // Redirect to the front page.
     return new TrustedRedirectResponse(Url::fromRoute('<front>', [], ['absolute' => TRUE])->toString());
   }
+
+  /**
+   * Reset the failure counter for a single video and let cron retry it.
+   *
+   * Route: /admin/youtube-transcript/retry/{video_id}
+   * Requires _csrf_token so it can only be called via a proper link.
+   */
+  public function retryVideo(string $video_id, Request $request) {
+    $kv = \Drupal::keyValue('youtube_transcript');
+    $key = 'fail_' . $video_id;
+    $count = (int) $kv->get($key, 0);
+
+    if ($count > 0) {
+      $kv->delete($key);
+      \Drupal::messenger()->addStatus($this->t(
+        'Failure counter reset for video @vid. Cron will retry on the next run.',
+        ['@vid' => $video_id]
+      ));
+    }
+    else {
+      \Drupal::messenger()->addWarning($this->t(
+        'No failure counter found for video @vid (already reset or never failed).',
+        ['@vid' => $video_id]
+      ));
+    }
+
+    $referer = $request->headers->get('referer');
+    if ($referer) {
+      return new TrustedRedirectResponse($referer);
+    }
+    return $this->redirect('assign_badge_from_quiz.badge_quality_report');
+  }
 }

@@ -21,3 +21,12 @@ youtube_transcript.oauth_callback:
     _title: 'Google OAuth Callback'
   requirements:
     _permission: 'administer site configuration'
+
+youtube_transcript.retry_video:
+  path: '/admin/youtube-transcript/retry/{video_id}'
+  defaults:
+    _controller: '\Drupal\youtube_transcript\Controller\YoutubeTranscriptController::retryVideo'
+    _title: 'Retry Video Transcript'
+  requirements:
+    _permission: 'administer site configuration'
+    _csrf_token: 'TRUE'

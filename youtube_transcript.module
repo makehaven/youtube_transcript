@@ -1,28 +1,116 @@
 <?php
 
 use Drupal\taxonomy\Entity\Term;
-use Drupal\youtube_transcript\YoutubeTranscriptFetcher;
-use Drupal\Core\Logger\LoggerChannelFactoryInterface;
+
+/**
+ * Number of consecutive fetch failures before a video is skipped by cron.
+ */
+const YOUTUBE_TRANSCRIPT_MAX_FAILURES = 3;
 
 /**
  * Implements hook_cron().
  *
- * Finds tool_video paragraphs that have a video URL but no transcript yet,
- * and fetches up to 10 per cron run to avoid timeouts. Already-populated
- * transcripts are never touched.
+ * Fetches missing transcripts for both badge taxonomy terms and tool_video
+ * paragraphs. Processes up to 5 of each per cron run. Videos that have
+ * failed YOUTUBE_TRANSCRIPT_MAX_FAILURES times are skipped permanently
+ * (unless reset via Drush --overwrite or the admin UI).
  */
 function youtube_transcript_cron() {
-  $logger = \Drupal::logger('youtube_transcript');
+  _youtube_transcript_cron_badges();
+  _youtube_transcript_cron_tool_videos();
+}
+
+/**
+ * Cron sub-task: fetch missing transcripts for badge taxonomy terms.
+ */
+function _youtube_transcript_cron_badges() {
+  $storage = \Drupal::entityTypeManager()->getStorage('taxonomy_term');
+  $logger  = \Drupal::logger('youtube_transcript');
+  $kv      = \Drupal::keyValue('youtube_transcript');
+
+  $last_id = \Drupal::state()->get('youtube_transcript.cron_last_badge_tid', 0);
+
+  $or = $storage->getQuery()->orConditionGroup()
+    ->notExists('field_badge_video_transcript')
+    ->condition('field_badge_video_transcript', '', '=');
+
+  $tids = $storage->getQuery()
+    ->condition('vid', 'badges')
+    ->condition('field_badge_video', '', '<>')
+    ->condition($or)
+    ->condition('tid', $last_id, '>')
+    ->sort('tid', 'ASC')
+    ->range(0, 5)
+    ->accessCheck(FALSE)
+    ->execute();
+
+  if (empty($tids)) {
+    \Drupal::state()->set('youtube_transcript.cron_last_badge_tid', 0);
+    return;
+  }
+
+  /** @var \Drupal\youtube_transcript\YoutubeTranscriptFetcher $fetcher */
+  $fetcher = \Drupal::service('youtube_transcript.fetcher');
+
+  foreach ($storage->loadMultiple($tids) as $term) {
+    $tid = $term->id();
+
+    // Skip if transcript was filled since the query ran.
+    if (!$term->get('field_badge_video_transcript')->isEmpty()) {
+      \Drupal::state()->set('youtube_transcript.cron_last_badge_tid', $tid);
+      continue;
+    }
+
+    $url = $term->get('field_badge_video')->getValue()[0]['input'] ?? '';
+    $video_id = $fetcher->extractVideoId($url);
+
+    if (!$video_id) {
+      \Drupal::state()->set('youtube_transcript.cron_last_badge_tid', $tid);
+      continue;
+    }
+
+    // Skip permanently-failing videos.
+    $fail_key = 'fail_' . $video_id;
+    if (($kv->get($fail_key, 0)) >= YOUTUBE_TRANSCRIPT_MAX_FAILURES) {
+      $logger->warning('youtube_transcript: skipping badge term @tid — video @vid has failed @n times. Fix captions in YouTube Studio or run Drush with --overwrite to reset.', [
+        '@tid' => $tid, '@vid' => $video_id, '@n' => YOUTUBE_TRANSCRIPT_MAX_FAILURES,
+      ]);
+      \Drupal::state()->set('youtube_transcript.cron_last_badge_tid', $tid);
+      continue;
+    }
+
+    $result = $fetcher->fetchAndStoreTranscript($term);
+
+    if ($result) {
+      $kv->delete($fail_key);
+      $logger->notice('youtube_transcript: saved transcript for badge term @tid (@label).', [
+        '@tid' => $tid, '@label' => $term->label(),
+      ]);
+    }
+    else {
+      $fails = $kv->get($fail_key, 0) + 1;
+      $kv->set($fail_key, $fails);
+      $logger->warning('youtube_transcript: failed for badge term @tid (attempt @n/@max): @err', [
+        '@tid' => $tid, '@n' => $fails, '@max' => YOUTUBE_TRANSCRIPT_MAX_FAILURES,
+        '@err' => $fetcher->getLastError(),
+      ]);
+    }
+
+    \Drupal::state()->set('youtube_transcript.cron_last_badge_tid', $tid);
+  }
+}
+
+/**
+ * Cron sub-task: fetch missing transcripts for tool_video paragraphs.
+ */
+function _youtube_transcript_cron_tool_videos() {
   $storage = \Drupal::entityTypeManager()->getStorage('paragraph');
+  $logger  = \Drupal::logger('youtube_transcript');
+  $kv      = \Drupal::keyValue('youtube_transcript');
 
-  // Find tool_video paragraphs with a URL but empty transcript.
-  // Process in ascending ID order; track the last processed ID in state so
-  // each cron run picks up where the previous left off (round-robin).
   $last_id = \Drupal::state()->get('youtube_transcript.cron_last_pid', 0);
-  $limit = 10;
 
-  // Match paragraphs where transcript is absent (no row) OR blank (empty string).
-  $or = \Drupal::entityQuery('paragraph')->orConditionGroup()
+  $or = $storage->getQuery()->orConditionGroup()
     ->notExists('field_video_transcript')
     ->condition('field_video_transcript', '', '=');
 
@@ -32,12 +120,10 @@ function youtube_transcript_cron() {
     ->condition($or)
     ->condition('id', $last_id, '>')
     ->sort('id', 'ASC')
-    ->range(0, $limit)
+    ->range(0, 5)
     ->accessCheck(FALSE)
     ->execute();
 
-  // If nothing above last_id, wrap around to catch any newly added paragraphs
-  // from the beginning of the list.
   if (empty($ids)) {
     \Drupal::state()->set('youtube_transcript.cron_last_pid', 0);
     return;
@@ -45,100 +131,77 @@ function youtube_transcript_cron() {
 
   /** @var \Drupal\youtube_transcript\YoutubeTranscriptFetcher $fetcher */
   $fetcher = \Drupal::service('youtube_transcript.fetcher');
-  $processed = 0;
 
   foreach ($storage->loadMultiple($ids) as $paragraph) {
     $pid = $paragraph->id();
 
-    // Double-check transcript is still empty (another process may have filled it).
     if (!$paragraph->get('field_video_transcript')->isEmpty()) {
       \Drupal::state()->set('youtube_transcript.cron_last_pid', $pid);
       continue;
     }
 
-    $url = $paragraph->get('field_video_url')->first()->input ?? '';
-    if (empty($url)) {
-      \Drupal::state()->set('youtube_transcript.cron_last_pid', $pid);
-      continue;
-    }
-
+    $url      = $paragraph->get('field_video_url')->first()->input ?? '';
     $video_id = $fetcher->extractVideoId($url);
 
     if (!$video_id) {
-      $logger->warning('youtube_transcript cron: invalid URL for paragraph @pid: @url', ['@pid' => $pid, '@url' => $url]);
       \Drupal::state()->set('youtube_transcript.cron_last_pid', $pid);
       continue;
     }
 
-    // fetchTranscript is also protected — use the public testTranscript wrapper.
-    $transcript = $fetcher->testTranscript($video_id);
+    $fail_key = 'fail_' . $video_id;
+    if (($kv->get($fail_key, 0)) >= YOUTUBE_TRANSCRIPT_MAX_FAILURES) {
+      $logger->warning('youtube_transcript: skipping paragraph @pid — video @vid has failed @n times. Fix captions in YouTube Studio or run Drush with --overwrite to reset.', [
+        '@pid' => $pid, '@vid' => $video_id, '@n' => YOUTUBE_TRANSCRIPT_MAX_FAILURES,
+      ]);
+      \Drupal::state()->set('youtube_transcript.cron_last_pid', $pid);
+      continue;
+    }
+
+    $transcript = $fetcher->fetchTranscript($video_id);
 
     if ($transcript) {
+      $kv->delete($fail_key);
       $paragraph->set('field_video_transcript', $transcript);
       $paragraph->save();
-      $logger->notice('youtube_transcript cron: saved transcript for paragraph @pid (video @vid).', ['@pid' => $pid, '@vid' => $video_id]);
-      $processed++;
+      $logger->notice('youtube_transcript: saved transcript for paragraph @pid (video @vid).', [
+        '@pid' => $pid, '@vid' => $video_id,
+      ]);
     }
     else {
-      $logger->warning('youtube_transcript cron: failed for paragraph @pid: @err', ['@pid' => $pid, '@err' => $fetcher->getLastError()]);
+      $fails = $kv->get($fail_key, 0) + 1;
+      $kv->set($fail_key, $fails);
+      $logger->warning('youtube_transcript: failed for paragraph @pid (attempt @n/@max): @err', [
+        '@pid' => $pid, '@n' => $fails, '@max' => YOUTUBE_TRANSCRIPT_MAX_FAILURES,
+        '@err' => $fetcher->getLastError(),
+      ]);
     }
 
     \Drupal::state()->set('youtube_transcript.cron_last_pid', $pid);
-  }
-
-  if ($processed > 0) {
-    $logger->notice('youtube_transcript cron: fetched @n transcript(s) this run.', ['@n' => $processed]);
   }
 }
 
 /**
  * Implements hook_entity_presave().
+ *
+ * When a badge term's video URL changes, clear the existing transcript so
+ * cron picks it up for re-fetch. No synchronous API calls here.
  */
 function youtube_transcript_entity_presave(\Drupal\Core\Entity\EntityInterface $entity) {
-    if ($entity instanceof Term && $entity->bundle() === 'badges') {
-      $term_id = $entity->id();
-      \Drupal::logger('youtube_transcript')->notice('Checking YouTube URL for term: @term_id', ['@term_id' => $term_id]);
-  
-      // Fetch all values from the multi-value field.
-      $youtube_urls = $entity->get('field_badge_video')->getValue();
-      
-      if (empty($youtube_urls)) {
-        \Drupal::logger('youtube_transcript')->error('No values found in field_badge_video for term @term_id.', ['@term_id' => $term_id]);
-        return;
-      }
-  
-      // Extract the first non-empty video URL
-      $youtube_url = $youtube_urls[0]['input'] ?? null;
-  
-      if (!$youtube_url) {
-        \Drupal::logger('youtube_transcript')->error('Field exists but contains no URL for term @term_id.', ['@term_id' => $term_id]);
-        return;
-      }
-  
-      \Drupal::logger('youtube_transcript')->notice('Extracted YouTube URL: @url for term @term_id', [
-        '@url' => $youtube_url,
-        '@term_id' => $term_id,
-      ]);
-  
-      $original = $entity->original ?? NULL;
-      $original_url = $original ? $original->get('field_badge_video')->getValue()[0]['input'] ?? null : null;
-  
-      if ($original_url === $youtube_url) {
-        \Drupal::logger('youtube_transcript')->notice('No change detected in YouTube URL for term @term_id. Skipping fetch.', ['@term_id' => $term_id]);
-        return;
-      }
-  
-      \Drupal::logger('youtube_transcript')->notice('YouTube URL changed for term @term_id. Fetching transcript...', ['@term_id' => $term_id]);
-  
-      // Fetch transcript if the URL changed.
-      $fetcher = \Drupal::service('youtube_transcript.fetcher');
-      $result = $fetcher->fetchAndStoreTranscript($entity);
-  
-      if ($result) {
-        \Drupal::logger('youtube_transcript')->notice('Successfully fetched transcript for term @term_id.', ['@term_id' => $term_id]);
-      } else {
-        \Drupal::logger('youtube_transcript')->error('Failed to fetch transcript for term @term_id.', ['@term_id' => $term_id]);
-      }
+  if (!($entity instanceof Term) || $entity->bundle() !== 'badges') {
+    return;
+  }
+
+  $new_url = $entity->get('field_badge_video')->getValue()[0]['input'] ?? '';
+  $original = $entity->original ?? NULL;
+  $old_url  = $original ? ($original->get('field_badge_video')->getValue()[0]['input'] ?? '') : '';
+
+  // URL added or changed — clear transcript so cron re-fetches it.
+  if ($new_url !== $old_url && $new_url !== '') {
+    $entity->set('field_badge_video_transcript', '');
+
+    // Also reset the failure counter for this video so cron will retry.
+    if ($video_id = \Drupal::service('youtube_transcript.fetcher')->extractVideoId($new_url)) {
+      \Drupal::keyValue('youtube_transcript')->delete('fail_' . $video_id);
     }
   }
-  
+}

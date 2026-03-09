@@ -1,0 +1,6 @@
+services:
+  youtube_transcript.commands:
+    class: Drupal\youtube_transcript\Commands\YoutubeTranscriptCommands
+    arguments: ['@youtube_transcript.fetcher']
+    tags:
+      - { name: drush.command }

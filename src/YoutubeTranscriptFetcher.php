@@ -44,16 +44,7 @@ public function fetchAndStoreTranscript(Term $term) {
   $config = $this->configFactory->get('youtube_transcript.settings');
   $skip_existing = (bool) ($config->get('skip_existing_transcripts') ?? TRUE);
 
-  \Drupal::logger('youtube_transcript')->notice(
-    'Starting transcript fetch for term: @tid (@title)',
-    ['@tid' => $tid, '@title' => $title]
-  );
-
   if ($skip_existing && !$term->get('field_badge_video_transcript')->isEmpty()) {
-    \Drupal::logger('youtube_transcript')->notice(
-      'Skipping term @tid (@title) because a transcript already exists and skip is enabled.',
-      ['@tid' => $tid, '@title' => $title]
-    );
     return TRUE;
   }
 
@@ -83,12 +74,6 @@ public function fetchAndStoreTranscript(Term $term) {
   $transcript = $this->fetchTranscript($video_id, $term);
 
   if ($transcript) {
-    \Drupal::logger('youtube_transcript')->notice(
-      'Transcript successfully retrieved for term @tid (@title).',
-      ['@tid' => $tid, '@title' => $title]
-    );
-
-    // Save transcript to the field and persist the term.
     $term->set('field_badge_video_transcript', $transcript);
     $term->save();
     return TRUE;
@@ -222,11 +207,7 @@ protected function cacheCaptionId(Term $term, string $caption_id): void {
  */
 
  
- protected function fetchTranscript($video_id, ?Term $term = NULL) {
-  \Drupal::logger('youtube_transcript')->notice(
-    'Fetching transcript for video ID: @video_id',
-    ['@video_id' => $video_id]
-  );
+ public function fetchTranscript($video_id, ?Term $term = NULL) {
 
   // --- Build Google client from saved config ---
   $config = $this->configFactory->get('youtube_transcript.settings');
@@ -313,7 +294,6 @@ $token_file = $private_real . '/youtube_oauth_token.json';
 if ($term) {
   $cached = $this->getCachedCaptionId($term);
   if ($cached) {
-    \Drupal::logger('youtube_transcript')->notice('Using cached caption ID @id for video @vid', ['@id' => $cached, '@vid' => $video_id]);
     return $this->downloadTranscript($cached, $youtube, FALSE, 'en');
   }
 }
@@ -325,18 +305,7 @@ try {
     'fields' => 'items(id,snippet/language,snippet/trackKind)'
   ]);
 
-  // (Optional) very verbose dump — comment out once things are stable.
-  \Drupal::logger('youtube_transcript')->notice(
-    'Caption response for video ID @video_id: @dump',
-    ['@video_id' => $video_id, '@dump' => print_r($captions, TRUE)]
-  );
-
-  // Get items first, then log how many we got.
   $items = method_exists($captions, 'getItems') ? $captions->getItems() : ($captions->items ?? []);
-  \Drupal::logger('youtube_transcript')->notice(
-    'Found @n caption track(s) for video @video_id',
-    ['@n' => is_array($items) ? count($items) : 0, '@video_id' => $video_id]
-  );
 
   $manual_caption_id = NULL;
   $asr_caption_id = NULL;
@@ -365,10 +334,6 @@ try {
 
     // Prefer manual captions.
     if ($manual_caption_id) {
-      \Drupal::logger('youtube_transcript')->notice(
-        'Downloading manual transcript for video @id',
-        ['@id' => $video_id]
-      );
       return $this->downloadTranscript($manual_caption_id, $youtube, FALSE, $caption_language);
     }
 
@@ -465,18 +430,10 @@ protected function downloadTranscript($caption_id, YouTube $youtube, $is_auto = 
       if (stripos($msg, '"forbidden"') !== false || stripos($msg, 'insufficient') !== false) {
         throw $e;
       }
-      \Drupal::logger('youtube_transcript')->notice(
-        'SRT not available for caption @id, retrying without tfmt. Error: @err',
-        ['@id' => $caption_id, '@err' => $msg]
-      );
       $response = $youtube->captions->download($caption_id);
     }
 
     $content = (string) $response->getBody();
-    \Drupal::logger('youtube_transcript')->notice(
-      'Caption raw content (first 400 chars): @preview',
-      ['@preview' => mb_substr($content, 0, 400)]
-    );
     return $clean($content);
   }
   catch (\Google\Service\Exception $e) {
@@ -541,7 +498,6 @@ protected function downloadTranscript($caption_id, YouTube $youtube, $is_auto = 
       $pid = $paragraph->id();
 
       if (!$paragraph->hasField('field_video_url') || $paragraph->get('field_video_url')->isEmpty()) {
-        \Drupal::logger('youtube_transcript')->notice('Paragraph @pid has no video URL, skipping.', ['@pid' => $pid]);
         $results[$pid] = NULL;
         continue;
       }
@@ -550,7 +506,6 @@ protected function downloadTranscript($caption_id, YouTube $youtube, $is_auto = 
         && !$paragraph->get('field_video_transcript')->isEmpty();
 
       if ($has_transcript && !$overwrite) {
-        \Drupal::logger('youtube_transcript')->notice('Paragraph @pid already has transcript, skipping.', ['@pid' => $pid]);
         $results[$pid] = NULL;
         continue;
       }
@@ -569,7 +524,6 @@ protected function downloadTranscript($caption_id, YouTube $youtube, $is_auto = 
       if ($transcript) {
         $paragraph->set('field_video_transcript', $transcript);
         $paragraph->save();
-        \Drupal::logger('youtube_transcript')->notice('Transcript saved for paragraph @pid (video @vid).', ['@pid' => $pid, '@vid' => $video_id]);
         $results[$pid] = TRUE;
       }
       else {
