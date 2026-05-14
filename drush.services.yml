@@ -4,3 +4,9 @@ services:
     arguments: ['@youtube_transcript.fetcher']
     tags:
       - { name: drush.command }
+
+  youtube_transcript.chapter_extraction_commands:
+    class: Drupal\youtube_transcript\Commands\ChapterExtractionCommands
+    arguments: ['@entity_type.manager', '@ai.provider']
+    tags:
+      - { name: drush.command }

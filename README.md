@@ -7,6 +7,51 @@ This module integrates with the YouTube API to fetch video transcripts and assoc
 - Fetches transcripts for YouTube videos linked in taxonomy terms.
 - Stores transcripts in a designated field within the term.
 - Provides an admin interface for configuration and manual fetching.
+- Extracts chapter timestamps from saved transcripts via an LLM and writes
+  them to `field_badge_video_timestamps` as YouTube jump-to-time links.
+
+## Chapter extraction
+
+Once a badge term has a saved transcript (`field_badge_video_transcript`) and
+a YouTube video (`field_badge_video`), the chapter command turns the SRT into
+a list of `https://youtu.be/<id>?t=<sec>` links with short labels.
+
+```bash
+# Preview chapters for one badge:
+drush yt:chapters --tid=280 --dry-run
+
+# Preview every badge that has a transcript but no chapters yet:
+drush yt:chapters --all-ready --dry-run
+
+# Save chapters for every ready badge and re-extract known-broken legacy ones:
+drush yt:chapters --all-ready --include-broken
+
+# If the default model under-covers a long video (warning prints during the
+# run), retry that badge with a stronger model:
+drush yt:chapters --tid=1913 --force --model=gpt-4o
+```
+
+By default the command will not overwrite badges that already have entries.
+Pass `--force` to overwrite, or list a TID in the `BROKEN_TIDS` allowlist in
+`src/Commands/ChapterExtractionCommands.php` to mark legacy-bad entries for
+mandatory re-extraction.
+
+### Running on the live site
+
+After this module is deployed via the normal Pantheon flow, run from your
+local machine:
+
+```bash
+# Preview against live first — nothing is written:
+terminus drush makehaven.live -- yt:chapters --all-ready --include-broken --dry-run
+
+# When the output looks right, save for real:
+terminus drush makehaven.live -- yt:chapters --all-ready --include-broken
+```
+
+The command uses whichever AI provider/model the site has configured under
+`ai.settings.default_providers.chat_with_complex_json` (falling back to plain
+`chat`). On live this is the same `openai_default` key the chatbot uses.
 
 ## Requirements
 

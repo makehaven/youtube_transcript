@@ -5,4 +5,6 @@ core_version_requirement: ^10 || ^11
 package: Makerspace
 dependencies:
   - drupal:taxonomy
+  - drupal:link
+  - ai:ai
 configure: youtube_transcript.settings
